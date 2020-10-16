@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/disintegration/imaging"
 	"image"
 	"image/color"
@@ -52,11 +51,9 @@ func main() {
 			worldCoords[j] = v
 		}
 		n := (worldCoords[2].Sub(worldCoords[0])).Cross(worldCoords[1].Sub(worldCoords[0]))
-		fmt.Print(n.AsFloat(), " ")
 		n = n.Normalize()
 		intensity := n.Mul(lightDir).AsFloat()
 		if intensity > 0 {
-			fmt.Println(intensity)
 			triangle2(screenCoords[:], img, color.RGBA{uint8(intensity * 255), uint8(intensity * 255), uint8(intensity * 255), 255})
 		}
 	}
