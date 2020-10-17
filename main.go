@@ -12,6 +12,7 @@ import (
 var (
 	red   = color.RGBA{R: 255, A: 255}
 	green = color.RGBA{G: 255, A: 255}
+	blue  = color.RGBA{B: 255, A: 255}
 	black = color.RGBA{A: 255}
 	white = color.RGBA{R: 255, G: 255, B: 255, A: 255}
 )
@@ -22,56 +23,54 @@ const (
 )
 
 func main() {
-	model := Open("obj/african_head.obj")
+	model := OpenOBJ("obj/african_head")
 
+	var zbuffer [width * height]float32
+	for i := range zbuffer {
+		zbuffer[i] = -math.MaxFloat32
+	}
 	upLeft := image.Point{}
 	lowRight := image.Point{X: width, Y: height}
-
 	img := image.NewRGBA(image.Rectangle{Min: upLeft, Max: lowRight})
 	for x := 0; x < width; x++ {
 		for y := 0; y < height; y++ {
 			img.Set(x, y, black)
 		}
 	}
-	/*for _, face := range model.faces {
-		screenCoords := [3]Vec2i{}
-		for j := 0; j < 3; j++ {
-			worldCoords := model.verts[face[j]]
-			screenCoords[j] = Vec2i{int((worldCoords.x + 1) * width / 2), int((worldCoords.y + 1) * height / 2)}
-		}
-		triangle2(screenCoords[:], img, color.RGBA{uint8(rand.Intn(255)), uint8(rand.Intn(255)), uint8(rand.Intn(255)), 255})
-	}*/
 	lightDir := Vec3f{0, 0, -1}
 	for _, face := range model.faces {
-		screenCoords := [3]Vec2i{}
 		worldCoords := [3]Vec3f{}
-		for j := 0; j < 3; j++ {
-			v := model.verts[face[j]]
-			screenCoords[j] = Vec2i{int((v.x + 1) * width / 2.0), int((v.y + 1) * height / 2.0)}
-			worldCoords[j] = v
+		var pts [3]Vec3f
+		for i := range pts {
+			v := model.verts[face[i]]
+			pts[i] = world2Screen(v)
+			worldCoords[i] = v
 		}
 		n := (worldCoords[2].Sub(worldCoords[0])).Cross(worldCoords[1].Sub(worldCoords[0]))
 		n = n.Normalize()
 		intensity := n.Mul(lightDir).AsFloat()
 		if intensity > 0 {
-			triangle2(screenCoords[:], img, color.RGBA{uint8(intensity * 255), uint8(intensity * 255), uint8(intensity * 255), 255})
+			triangle2(pts[:], zbuffer[:], img, color.RGBA{uint8(intensity * 255), uint8(intensity * 255), uint8(intensity * 255), 255})
 		}
 	}
-	/*t0 := [3]Vec2i{{10, 70}, {50, 160}, {70, 80}}
-	t1 := [3]Vec2i{{180, 50}, {150, 1}, {70, 180}}
-	t2 := [3]Vec2i{{180, 150}, {120, 160}, {130, 180}}
-	triangle(t0[0], t0[1], t0[2], img, red)
-	triangle(t1[0], t1[1], t1[2], img, white)
-	triangle(t2[0], t2[1], t2[2], img, green)*/
-	//pts := []Vec2i{{10, 10}, {100, 30}, {190, 160}}
-	//triangle2(pts, img, red)
 	img2 := imaging.FlipV(img)
-	f, _ := os.Create("lesson2.png")
+	f, _ := os.Create("lesson3.png")
 	defer f.Close()
 	png.Encode(f, img2)
 }
 
+func world2Screen(v Vec3f) Vec3f {
+	return Vec3f{float32(int((v.x+1.)*width/2. + .5)), float32(int((v.y+1.)*height/2. + .5)), v.z}
+}
+
 func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func absf(x float32) float32 {
 	if x < 0 {
 		return -x
 	}
@@ -87,18 +86,32 @@ func swap(a, b int) (int, int) {
 	return b, a
 }
 
-func max(a, b int) int {
+func max(a, b float32) float32 {
 	if b > a {
 		return b
 	}
 	return a
 }
 
-func min(a, b int) int {
+func min(a, b float32) float32 {
 	if b < a {
 		return b
 	}
 	return a
+}
+
+func rasterize(p0, p1 Vec2i, img *image.RGBA, color color.Color, ybuffer []int) {
+	if p0.x > p1.x {
+		p0, p1 = swapV2i(p0, p1)
+	}
+	for x := p0.x; x <= p1.x; x++ {
+		t := float32(x-p0.x) / float32(p1.x-p0.x)
+		y := int(float32(p0.y)*(1-t) + float32(p1.y)*t)
+		if ybuffer[x] < y {
+			ybuffer[x] = y
+			img.Set(x, 0, color)
+		}
+	}
 }
 
 func barycentric(pts []Vec2i, P Vec2i) Vec3f {
@@ -113,24 +126,47 @@ func barycentric(pts []Vec2i, P Vec2i) Vec3f {
 	return Vec3f{1 - (u.x+u.y)/u.z, u.y / u.z, u.x / u.z}
 }
 
-func triangle2(pts []Vec2i, img *image.RGBA, color color.Color) {
-	bboxmin := Vec2i{img.Rect.Dx() - 1, img.Rect.Dy() - 1}
-	bboxmax := Vec2i{}
-	clamp := Vec2i{img.Rect.Dx() - 1, img.Rect.Dy() - 1}
+func barycentric2(A, B, C, P Vec3f) Vec3f {
+	var s [2]Vec3f
+	for i := 2; i > 0; {
+		i--
+		s[i].x = C.Get(i) - A.Get(i)
+		s[i].y = B.Get(i) - A.Get(i)
+		s[i].z = A.Get(i) - P.Get(i)
+	}
+
+	u := s[0].Cross(s[1])
+	if absf(u.z) > 1e-2 { // dont forget that u[2] is integer. If it is zero then triangle ABC is degenerate
+		return Vec3f{1. - (u.x+u.y)/u.z, u.y / u.z, u.x / u.z}
+	}
+	return Vec3f{-1, 1, 1} // in this case generate negative coordinates, it will be thrown away by the rasterizer
+}
+
+func triangle2(pts []Vec3f, zbuffer []float32, img *image.RGBA, color color.Color) {
+	bboxmin := Vec2f{math.MaxFloat32, math.MaxFloat32}
+	bboxmax := Vec2f{-math.MaxFloat32, -math.MaxFloat32}
+	clamp := Vec2f{float32(img.Rect.Dx() - 1), float32(img.Rect.Dy() - 1)}
 	for i := 0; i < 3; i++ {
 		bboxmin.x = max(0, min(bboxmin.x, pts[i].x))
 		bboxmax.x = min(clamp.x, max(bboxmax.x, pts[i].x))
 		bboxmin.y = max(0, min(bboxmin.y, pts[i].y))
 		bboxmax.y = min(clamp.y, max(bboxmax.y, pts[i].y))
 	}
-	var P Vec2i
+	var P Vec3f
 	for P.x = bboxmin.x; P.x <= bboxmax.x; P.x++ {
 		for P.y = bboxmin.y; P.y <= bboxmax.y; P.y++ {
-			bcScreen := barycentric(pts, P)
+			bcScreen := barycentric2(pts[0], pts[1], pts[2], P)
 			if bcScreen.x < 0 || bcScreen.y < 0 || bcScreen.z < 0 {
 				continue
 			}
-			img.Set(P.x, P.y, color)
+			P.z = 0
+			for i := 0; i < 3; i++ {
+				P.z += pts[i].z * bcScreen.Get(i)
+			}
+			if zbuffer[int(P.x+P.y*width)] < P.z {
+				zbuffer[int(P.x+P.y*width)] = P.z
+				img.Set(int(P.x), int(P.y), color)
+			}
 		}
 	}
 }
@@ -175,6 +211,27 @@ func triangle(t0, t1, t2 Vec2i, img *image.RGBA, color color.Color) {
 		}
 		for j := A.x; j <= B.x; j++ {
 			img.Set(j, y, color) // attention, due to int casts t0.y+i != A.y
+		}
+	}
+}
+
+func line2(p0, p1 Vec2i, img *image.RGBA, color color.Color) {
+	steep := false
+	if abs(p0.x-p1.x) < abs(p0.y-p1.y) {
+		p0.x, p0.y = swap(p0.x, p0.y)
+		p1.x, p1.y = swap(p1.x, p1.y)
+		steep = true
+	}
+	if p0.x > p1.x {
+		p0, p1 = swapV2i(p0, p1)
+	}
+	for x := p0.x; x <= p1.x; x++ {
+		t := float32(x-p0.x) / float32(p1.x-p0.x)
+		y := int(float32(p0.y)*(1-t) + float32(p1.y)*t + 0.5)
+		if steep {
+			img.Set(y, x, color)
+		} else {
+			img.Set(x, y, color)
 		}
 	}
 }
